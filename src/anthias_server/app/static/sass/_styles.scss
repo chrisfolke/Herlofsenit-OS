@@ -2145,8 +2145,15 @@ body.auth-body {
 }
 
 .auth-logo {
-  height: 2.5rem;
+  height: 4rem;
   width: auto;
+  max-width: 100%;
+  // White-background Herlofsen logo on the dark auth/error pages: a
+  // white rounded panel keeps it from reading as a bare white box.
+  background: #ffffff;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  box-shadow: var(--shadow-md);
 }
 
 .auth-headline {
