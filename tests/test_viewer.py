@@ -952,9 +952,12 @@ def test_skip_when_current_asset_deactivated() -> None:
     skip_event.set.assert_called_once()
 
 
-def test_no_skip_when_current_asset_still_active() -> None:
-    """Unrelated edits (e.g. duration on a different asset) shouldn't
-    interrupt the displayed asset."""
+def test_force_refresh_when_current_asset_still_active() -> None:
+    """A ``reload`` for a still-active on-screen asset must force a
+    re-render: an in-place content edit (replaced image, edited Google
+    Slides) keeps the same URL, so without this the webview never gets
+    re-pushed and the stale frame stays up until a restart. The flag is
+    set and the loop woken; the main thread clears current_browser_url."""
     scheduler = mock.Mock()
     scheduler.current_asset_id = 'asset-1'
     skip_event = mock.Mock()
@@ -962,12 +965,37 @@ def test_no_skip_when_current_asset_still_active() -> None:
     active_asset.is_active.return_value = True
     with (
         mock.patch.object(viewer, 'scheduler', scheduler),
+        mock.patch.object(viewer, '_refresh_current_asset_pending', False),
         mock.patch('anthias_viewer.get_skip_event', return_value=skip_event),
         mock.patch('anthias_viewer.Asset.objects.filter') as objects_filter,
     ):
         objects_filter.return_value.first.return_value = active_asset
         viewer._skip_if_current_asset_inactive()
-    skip_event.set.assert_not_called()
+        assert viewer._refresh_current_asset_pending is True
+    skip_event.set.assert_called_once()
+
+
+def test_consume_pending_refresh_clears_current_url() -> None:
+    """The main-thread consumer clears current_browser_url so the next
+    view_* re-pushes even when the URL is unchanged, then resets the
+    flag."""
+    with (
+        mock.patch.object(viewer, '_refresh_current_asset_pending', True),
+        mock.patch.object(viewer, 'current_browser_url', 'http://old/'),
+    ):
+        viewer._consume_pending_refresh()
+        assert viewer.current_browser_url is None
+        assert viewer._refresh_current_asset_pending is False
+
+
+def test_consume_pending_refresh_no_op_when_flag_clear() -> None:
+    """No pending refresh → current_browser_url is left untouched."""
+    with (
+        mock.patch.object(viewer, '_refresh_current_asset_pending', False),
+        mock.patch.object(viewer, 'current_browser_url', 'http://keep/'),
+    ):
+        viewer._consume_pending_refresh()
+        assert viewer.current_browser_url == 'http://keep/'
 
 
 def test_skip_noop_when_no_current_asset() -> None:

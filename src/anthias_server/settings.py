@@ -24,7 +24,7 @@ DEFAULTS = {
         'assetdir': 'anthias_assets',
         'database': CONFIG_DIR + 'anthias.db',
         'date_format': 'mm/dd/yyyy',
-        'splash_logo_url': '/static/img/logo-full-splash.svg',
+        'splash_logo_url': '/static/img/herlofsen-logo.png',
         'use_24_hour_clock': False,
         'use_ssl': False,
         'auth_backend': '',

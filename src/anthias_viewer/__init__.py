@@ -111,6 +111,21 @@ _last_applied_dark_mode: bool = False
 # asset_loop via _consume_pending_rotation_bounce().
 _rotation_bounce_pending: bool = False
 
+# Cross-thread "re-render the asset currently on screen" handoff. Set by
+# the subscriber thread in _skip_if_current_asset_inactive() when a
+# `reload` arrives and the displayed asset is still active — its content
+# may have been edited in place (a replaced image keeps the same
+# asset_id and therefore the same on-disk URI; an edited web page /
+# Google Slides keeps the same URL). The playlist reload via
+# get_db_mtime() picks up field changes, but view_image()/view_webpage()
+# short-circuit on an unchanged URL and never re-push to the webview, so
+# the stale frame stays up until the viewer process restarts (which
+# resets current_browser_url). The main thread consumes this flag at the
+# top of asset_loop via _consume_pending_refresh(), clearing
+# current_browser_url — which it owns — so the next view_* call pushes
+# again even when the URL is unchanged.
+_refresh_current_asset_pending: bool = False
+
 
 def _rotation_value() -> int:
     """Coerce settings['screen_rotation'] to a known cardinal angle.
@@ -1245,19 +1260,53 @@ def _consume_pending_rotation_bounce() -> None:
     current_browser_url = None
 
 
-def _skip_if_current_asset_inactive() -> None:
-    """Cut short the current rotation if the displayed asset is gone.
+def _consume_pending_refresh() -> None:
+    """Main-thread half of the forced-re-render handoff.
 
-    Issue #2430: deleting or deactivating an asset that's currently on
-    screen would only take effect after its full ``duration`` elapsed —
-    a 1-hour image kept showing for the rest of the hour. The server
-    publishes ``reload`` on every mutation; here we check whether the
-    asset we're displaying is still active, and pop the ``skip_event``
-    if not so ``asset_loop`` advances on the next tick. Playlist
-    refresh itself happens inside ``get_next_asset`` via the existing
-    ``get_db_mtime`` short-circuit, so we don't touch ``scheduler``
-    state from the subscriber thread — we only signal.
+    Called from ``asset_loop`` at the top of each tick. When the
+    subscriber set ``_refresh_current_asset_pending`` (a ``reload``
+    arrived for a still-active on-screen asset whose content may have
+    changed in place), clear ``current_browser_url`` here — on the thread
+    that owns it. That defeats the value-comparison short-circuit in
+    view_image()/view_webpage() so the next asset is pushed to the
+    webview again even when its URL is unchanged, surfacing a replaced
+    image or an edited web page / Google Slides deck that would otherwise
+    stay invisible until the viewer process restarts.
     """
+    global _refresh_current_asset_pending, current_browser_url
+    if not _refresh_current_asset_pending:
+        return
+    _refresh_current_asset_pending = False
+    logging.info('Consuming pending current-asset refresh on main thread')
+    current_browser_url = None
+
+
+def _skip_if_current_asset_inactive() -> None:
+    """React to a ``reload`` for the asset currently on screen.
+
+    Two cases, both needing the screen to change *now* instead of after
+    the current asset's full ``duration`` elapses:
+
+    * The asset was deleted or deactivated (issue #2430): a 1-hour image
+      kept showing for the rest of the hour. Pop the ``skip_event`` so
+      ``asset_loop`` advances to the next asset on the next tick.
+
+    * The asset is still active but its content may have been edited in
+      place — a replaced image (same asset_id, so same on-disk URI) or
+      an edited web page / Google Slides deck (same URL). Without this
+      branch, view_image()/view_webpage() short-circuit on the unchanged
+      URL and never re-push to the webview, so the stale frame stays up
+      until the viewer process restarts. Flag a forced re-render that the
+      main thread performs by clearing ``current_browser_url`` (which it
+      owns), then wake the loop so it happens promptly rather than after
+      the remaining ``duration``.
+
+    Playlist refresh itself happens inside ``get_next_asset`` via the
+    existing ``get_db_mtime`` short-circuit, so we never touch
+    ``scheduler`` or ``current_browser_url`` from this subscriber thread
+    — we only signal.
+    """
+    global _refresh_current_asset_pending
     if scheduler is None:
         return
     current_id = scheduler.current_asset_id
@@ -1277,6 +1326,17 @@ def _skip_if_current_asset_inactive() -> None:
             current_id,
         )
         get_skip_event().set()
+        return
+
+    # Still active: force a re-render so an in-place content edit
+    # (replaced image, edited web page / Google Slides) reaches the
+    # screen without waiting out the remaining duration or a restart.
+    logging.info(
+        'Current asset %s still active; forcing re-render after reload',
+        current_id,
+    )
+    _refresh_current_asset_pending = True
+    get_skip_event().set()
 
 
 def _asset_is_displayable(asset: dict[str, Any]) -> bool:
@@ -1371,6 +1431,13 @@ def asset_loop(scheduler: Any) -> None:
     # invocation below will see browser.is_alive()==False and
     # respawn via load_browser() with the updated rotation env.
     _consume_pending_rotation_bounce()
+
+    # Re-render the on-screen asset if a `reload` flagged an in-place
+    # content edit (replaced image, edited web page / Google Slides).
+    # Must run on this thread because it clears ``current_browser_url``,
+    # which the subscriber thread must not touch. Cheap early-return when
+    # nothing's pending.
+    _consume_pending_refresh()
 
     # Issue #2856 — and retry the Wayland rotation if the boot-time
     # attempt in load_browser() raced cage's wayland-socket setup.

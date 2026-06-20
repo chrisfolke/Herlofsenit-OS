@@ -1,6 +1,12 @@
 screen_width = Window.GetWidth();
 screen_height = Window.GetHeight();
 
+# Paint the whole boot screen white so the Herlofsen logo (which sits on
+# a white background) blends in seamlessly instead of showing a white box
+# on Plymouth's default black. Colours are floats in 0..1.
+Window.SetBackgroundTopColor(1.0, 1.0, 1.0);
+Window.SetBackgroundBottomColor(1.0, 1.0, 1.0);
+
 theme_image = Image("splashscreen.png");
 image_width = theme_image.GetWidth();
 image_height = theme_image.GetHeight();
@@ -33,7 +39,9 @@ message_sprite = Sprite();
 message_sprite.SetPosition(screen_width * 0.1, screen_height * 0.9, 10000);
 
 fun message_callback (text) {
-	my_image = Image.Text(text, 1, 1, 1);
+	# Black text — readable on the white background set above (white-on-
+	# white would be invisible).
+	my_image = Image.Text(text, 0, 0, 0);
 	message_sprite.SetImage(my_image);
 	sprite.SetImage (resized_image);
 }
